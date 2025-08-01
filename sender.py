@@ -3,6 +3,7 @@ import rospy, socket, struct, time
 import tf2_ros
 import tf_conversions
 from geometry_msgs.msg import TransformStamped
+from nav_msgs.msg import OccupancyGrid
 
 from serialize_navdata import serialize_navdata
 
@@ -12,9 +13,9 @@ MESSAGE_TYPE_NAVDATA = 1
 message_id = 0
 
 # def mock_pose(): return (1.0, 2.0, 0.5)
-
-def mock_obstacles(): return [(0.5, 0.5), (1.5, 1.5)]
 def mock_path(): return [(1.0, 1.0), (2.0, 2.0)]
+
+latest_obstacles = []
 
 def get_tf_pose(tf_buffer):
     try:
@@ -27,6 +28,26 @@ def get_tf_pose(tf_buffer):
     except Exception as e:
         rospy.logwarn_throttle(5, f"[POSE] TF lookup failed: {e}")
         return (0.0, 0.0, 0.0)
+
+def costmap_callback(msg: OccupancyGrid):
+    global latest_obstacles
+    latest_obstacles = []
+
+    width = msg.info.width
+    height = msg.info.height
+    resolution = msg.info.resolution
+    origin = msg.info.origin
+
+    for idx, val in enumerate(msg.data):
+        if val > 50:  # occupied cell threshold
+            x_idx = idx % width
+            y_idx = idx // width
+            x = origin.position.x + x_idx * resolution
+            y = origin.position.y + y_idx * resolution
+            latest_obstacles.append((x, y))
+
+def get_obstacles_from_costmap():
+    return latest_obstacles[:100]  # limit to 100 for bandwidth
 
 def connect():
     while not rospy.is_shutdown():
@@ -47,22 +68,23 @@ def main():
     tf_buffer = tf2_ros.Buffer()
     tf_listener = tf2_ros.TransformListener(tf_buffer)
 
+    rospy.Subscriber("/move_base/local_costmap/costmap", OccupancyGrid, costmap_callback, queue_size=1)
+
     sock = connect()
-    rate = rospy.Rate(10)
+    rate = rospy.Rate(1)
 
     while not rospy.is_shutdown():
         try:
             pose = get_tf_pose(tf_buffer)
             # pose = mock_pose()
-            obs = mock_obstacles()
+            obs = get_obstacles_from_costmap()
             path = mock_path()
             payload = serialize_navdata(pose, obs, path)
 
             header = struct.pack('<III', message_id, MESSAGE_TYPE_NAVDATA, len(payload))
             sock.sendall(header + payload)
 
-            # rospy.loginfo_throttle(1, f"[SENT] ID={message_id} | Type={MESSAGE_TYPE_NAVDATA} | {len(payload)} bytes")
-            rospy.loginfo(f"[SENT] ID={message_id} | Type={MESSAGE_TYPE_NAVDATA} | {len(payload)} bytes")
+            rospy.loginfo_throttle(1, f"[SENT] ID={message_id} | Obstacles={len(obs)} | {len(payload)} bytes")
             message_id += 1
         except Exception as e:
             rospy.logwarn(f"[ERROR] Send failed: {e}")
