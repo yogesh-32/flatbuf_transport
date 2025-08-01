@@ -1,0 +1,24 @@
+table Pose2D {
+  x: float;
+  y: float;
+  yaw: float;
+}
+
+table ObstaclePoint {
+  x: float;
+  y: float;
+}
+
+table PathPoint {
+  x: float;
+  y: float;
+}
+
+table NavData {
+  timestamp: double;
+  pose: Pose2D;
+  obstacles: [ObstaclePoint];
+  path: [PathPoint];
+}
+
+root_type NavData;
