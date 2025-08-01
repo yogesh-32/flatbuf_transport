@@ -3,19 +3,20 @@ import rospy, socket, struct, time
 import tf2_ros
 import tf_conversions
 from geometry_msgs.msg import TransformStamped
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Path
 
 from serialize_navdata import serialize_navdata
 
-HOST = "127.0.0.1"
+# HOST = "127.0.0.1"
+HOST = "192.168.144.214"
 PORT = 9001
 MESSAGE_TYPE_NAVDATA = 1
 message_id = 0
 
 # def mock_pose(): return (1.0, 2.0, 0.5)
-def mock_path(): return [(1.0, 1.0), (2.0, 2.0)]
 
 latest_obstacles = []
+latest_path = []
 
 def get_tf_pose(tf_buffer):
     try:
@@ -34,20 +35,31 @@ def costmap_callback(msg: OccupancyGrid):
     latest_obstacles = []
 
     width = msg.info.width
-    height = msg.info.height
     resolution = msg.info.resolution
     origin = msg.info.origin
 
     for idx, val in enumerate(msg.data):
-        if val > 50:  # occupied cell threshold
+        if val > 95:    # Stricter limit 50 -> 95 -> 100
             x_idx = idx % width
             y_idx = idx // width
             x = origin.position.x + x_idx * resolution
             y = origin.position.y + y_idx * resolution
             latest_obstacles.append((x, y))
 
+def path_callback(msg: Path):
+    global latest_path
+    latest_path = []
+    for pose in msg.poses:
+        x = pose.pose.position.x
+        y = pose.pose.position.y
+        latest_path.append((x, y))
+
 def get_obstacles_from_costmap():
-    return latest_obstacles[:100]  # limit to 100 for bandwidth
+    return latest_obstacles[:10000] # Limit increased 100 -> 10000
+
+def get_path_from_global_planner():
+    # return latest_path[:200]
+    return latest_path
 
 def connect():
     while not rospy.is_shutdown():
@@ -69,6 +81,7 @@ def main():
     tf_listener = tf2_ros.TransformListener(tf_buffer)
 
     rospy.Subscriber("/move_base/local_costmap/costmap", OccupancyGrid, costmap_callback, queue_size=1)
+    rospy.Subscriber("/move_base/NavfnROS/plan", Path, path_callback, queue_size=1)
 
     sock = connect()
     rate = rospy.Rate(1)
@@ -78,13 +91,13 @@ def main():
             pose = get_tf_pose(tf_buffer)
             # pose = mock_pose()
             obs = get_obstacles_from_costmap()
-            path = mock_path()
+            path = get_path_from_global_planner()
             payload = serialize_navdata(pose, obs, path)
 
             header = struct.pack('<III', message_id, MESSAGE_TYPE_NAVDATA, len(payload))
             sock.sendall(header + payload)
 
-            rospy.loginfo_throttle(1, f"[SENT] ID={message_id} | Obstacles={len(obs)} | {len(payload)} bytes")
+            rospy.loginfo_throttle(1, f"[SENT] ID={message_id} | Obs={len(obs)} | Path={len(path)} | {len(payload)} bytes")
             message_id += 1
         except Exception as e:
             rospy.logwarn(f"[ERROR] Send failed: {e}")
